@@ -30,6 +30,7 @@ void curand_init (unsigned long long seed, unsigned long long sequence,
 
 int min(int a, int b);
 int atomicAdd(int* address, int val);
+int atomicSub(int* address, int val);
 void __threadfence_block();
 
 cudaError_t cudaMalloc(void **devPtr, size_t size);
@@ -46,6 +47,48 @@ cudaError_t cudaMemcpy(void *dest, const void *src, size_t count, cudaMemcpyKind
 
 int atomicCAS(int *address, int compare, int val);
 unsigned long long int atomicCAS(unsigned long long int *address, unsigned long long int compare, unsigned long long int val);
+
+void __threadfence();
+
+struct cudaStream_t {
+};
+cudaError_t cudaStreamCreate(cudaStream_t *stream);
+cudaError_t cudaStreamDestroy(cudaStream_t stream);
+cudaError_t cudaMemcpyAsync(void *dest, const void *src, size_t count, cudaMemcpyKind kind, cudaStream_t stream);
+
+int __syncthreads_and(int predicate);
+int __syncthreads_count(int predicate);
+int __syncthreads_or(int predicate);
+
+struct cudaDeviceProp {
+    char name[256];
+    size_t totalGlobalMem;
+    size_t sharedMemPerBlock;
+    int regsPerBlock;
+    int warpSize;
+    size_t memPitch;
+    int maxThreadsPerBlock;
+    int maxThreadsDim[3];
+    int maxGridSize[3];
+    size_t totalConstMem;
+    int major;
+    int minor;
+    int clockRate;
+    size_t textureAlignment;
+    int deviceOverlap;
+    int multiProcessorCount;
+    int kernelExecTimeoutEnabled;
+    int integrated;
+    int canMapHostMemory;
+    int computeMode;
+    int concurrentKernels;
+    int ECCEnabled;
+    int pciBusID;
+    int pciDeviceID;
+    int tccDriver;
+};
+
+cudaError_t cudaGetDeviceProperties(cudaDeviceProp *prop, int device);
 
 #define __syncthreads() do {} while(0)
 #endif

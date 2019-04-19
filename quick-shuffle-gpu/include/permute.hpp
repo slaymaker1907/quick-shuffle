@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <climits>
 #include <cmath>
+#include "unrolled_list.hpp"
 
 namespace cuda_permute
 {
@@ -25,7 +26,10 @@ int QuickPermuteConfig_global_memory_size(QuickPermuteConfig *config);
 
 __device__ int bounded_rand(curandState_t *state, unsigned int max_val, unsigned int threshold);
 // output and global_bucket_size should be large enough s.t. we rarely overflow a bucket (will fail if violated).
-__global__ void quick_permute_partition(int *const input, int *output, int size, QuickPermuteConfig *const config);
+__global__ void quick_permute_partition(UnrolledList<int> *input,
+                                        UnrolledList<int> *output,
+                                        int size,
+                                        QuickPermuteConfig *const config);
 void quick_permute_helper(int *input, int size);
 
 template <typename T>
