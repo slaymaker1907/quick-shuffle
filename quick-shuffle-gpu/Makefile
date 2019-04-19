@@ -8,11 +8,14 @@ BUILD_PATH ?= build
 
 # code lists #
 SOURCES = $(call rwildcard, src/, *.cpp)
+CU_SOURCES = $(call rwildcard, src/, *.cu)
 # Set the object file names, with the source directory stripped
 # from the path, and the build path prepended in its place
 OBJECTS = $(SOURCES:src/%.cpp=$(BUILD_PATH)/%.o)
+CU_OBJECTS = $(CU_SOURCES:src/%.cu=$(BUILD_PATH)/%.o)
 # Set the dependency files that will be used to add header dependencies
 DEPS = $(OBJECTS:%.o=%.d)
+CU_DEPS = $(CU_OBJECTS:%.o=%.d)
 
 # flags #
 # CXX_FLAGS = -std=c++11 -Wall -Wextra -g
@@ -31,15 +34,19 @@ clean:
 	@$(RM) main
 
 # checks the executable and symlinks to the output
-.PHONY: all dirs
-all: main
+.PHONY: all
+all: dirs main
 
 # Creation of the executable
-main: $(OBJECTS)
+main: $(OBJECTS) $(CU_OBJECTS)
 	@echo "Linking: $@"
-	$(CXX) $(OBJECTS) -o $@
+	$(CXX) $(CXX_FLAGS) $(OBJECTS) $(CU_OBJECTS) -o $@
 
 $(DEPS): $(BUILD_PATH)/%.d: src/%.cpp
+	@echo "Generating dependency file for $<"
+	$(CXX) $(INCLUDES) -M $< -o $@
+
+$(CU_DEPS): $(BUILD_PATH)/%.d: src/%.cu
 	@echo "Generating dependency file for $<"
 	$(CXX) $(INCLUDES) -M $< -o $@
 
@@ -50,6 +57,10 @@ $(DEPS): $(BUILD_PATH)/%.d: src/%.cpp
 # After the first compilation they will be joined with the rules from the
 # dependency files to provide header dependencies
 $(BUILD_PATH)/%.o: src/%.cpp
+	@echo "Compiling: $< -> $@"
+	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_PATH)/%.o: src/%.cu
 	@echo "Compiling: $< -> $@"
 	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c $< -o $@
 

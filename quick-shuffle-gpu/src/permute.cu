@@ -153,7 +153,7 @@ void quick_permute_helper(T const* input, int size) {
     size_t approx_stack_needed = 0;
     size_t shared_size = device_properties.sharedMemPerBlock - approx_stack_needed;
 
-    // quick_permute_partition<<<block_count, block_size, shared_size>>>(device_input, device_output, size, device_config);
+    quick_permute_partition<<<block_count, block_size, shared_size>>>(device_input, device_output, size, device_config);
 }
 #undef T
 
