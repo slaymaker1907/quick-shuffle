@@ -20,13 +20,14 @@ CU_DEPS = $(CU_OBJECTS:%.o=%.d)
 # flags #
 # CXX_FLAGS = -std=c++11 -Wall -Wextra -g
 INCLUDES = -I include/
-CXX_FLAGS =--compiler-options=-Wall --Wreorder -O3 --std=c++14
+# CXX_FLAGS =--compiler-options=-Wall --Wreorder -O3 --std=c++14
+CXX_FLAGS =--compiler-options=-Wall -O0 --std=c++14 -lineinfo
 # Space-separated pkg-config libraries used by this project
 
 .PHONY: dirs
 dirs:
 	@echo "Creating directories"
-	@mkdir -p $(dir $(OBJECTS))
+	@mkdir -p $(dir $(OBJECTS)) $(dir $(CU_OBJECTS))
 
 .PHONY: clean
 clean:
@@ -52,6 +53,7 @@ $(CU_DEPS): $(BUILD_PATH)/%.d: src/%.cu
 
 # Add dependency files, if they exist
 -include $(DEPS)
+-include $(CU_DEPS)
 
 # Source file rules
 # After the first compilation they will be joined with the rules from the
@@ -63,4 +65,3 @@ $(BUILD_PATH)/%.o: src/%.cpp
 $(BUILD_PATH)/%.o: src/%.cu
 	@echo "Compiling: $< -> $@"
 	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c $< -o $@
-
