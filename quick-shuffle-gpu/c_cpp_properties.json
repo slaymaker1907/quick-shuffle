@@ -19,7 +19,7 @@
             "intelliSenseMode": "gcc-x64",
             "cStandard": "c11",
             "cppStandard": "c++14",
-            "includePath": ["${workspaceFolder}/include"]
+            "includePath": ["${workspaceFolder}/include", "${workspaceFolder}/../cub-1.8.0/cub"]
         }
     ],
     "version": 4

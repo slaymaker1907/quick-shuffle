@@ -27,7 +27,7 @@ QuickPermuteConfig QuickPermuteConfig_new(int input_size, int seed) {
     QuickPermuteConfig result;
 
     result.pcount = 32;
-    result.eles_per_thread = 8;
+    result.eles_per_thread = 64;
     result.seed = seed;
     result.bucket_size = 32;
     result.partition_sizes = nullptr;
@@ -43,6 +43,11 @@ __device__ int bounded_rand(curandState_t *state, unsigned int max_val, unsigned
     } while (current >= threshold);
 
     return current % max_val;
+}
+
+__device__ int bounded_rand(curandState_t *state, unsigned int max_val) {
+    unsigned int rng_threshold = INT_MAX - (INT_MAX % max_val);
+    return bounded_rand(state, max_val, rng_threshold);
 }
 
 template <typename T>
@@ -84,7 +89,7 @@ __global__ void quick_permute_partition(UnrolledList<T> *input,
     // sync to synchronized shared memory input buffer and the zeroed bucket sizes.
     __syncthreads();
 
-    int rng_threshold = UINT_MAX - (UINT_MAX % config->pcount);
+    int rng_threshold = INT_MAX - (INT_MAX % config->pcount);
 
     curandState_t rand_state;
     curand_init(config->seed, tid, 0, &rand_state); // sequence should be tid to ensure independence.
@@ -180,7 +185,7 @@ template<typename T>
 __global__ void concat_partitions(UnrolledList<T> *partitions, int pcount, T* output, size_t *cumm_part_sizes) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     UnrolledList<T> input = tid < pcount ? partitions[tid] : partitions[0];
-    int input_block_size = input->block_size;
+    int input_block_size = input.block_size;
     size_t start_ind = tid == 0 || tid >= pcount ? 0 : cumm_part_sizes[tid-1];
     T* thr_out = output + start_ind;
 
@@ -190,7 +195,7 @@ __global__ void concat_partitions(UnrolledList<T> *partitions, int pcount, T* ou
     }
     __syncthreads();
     if (tid < pcount) {
-        int my_count = input->node_count();
+        int my_count = input.node_count();
         atomicMax(&max_node_count, my_count);
     }
     __syncthreads();
@@ -218,19 +223,35 @@ public:
     }
 };
 
+__global__ void generate_radix_keys(int *keys, int size, int eles_per_thread, int seed) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int ele_id =  eles_per_thread * blockIdx.x * blockDim.x + threadIdx.x;
+    curandState_t rand_state;
+    curand_init(seed, tid, 0, &rand_state); // sequence should be tid to ensure independence.
+
+    for (int i = 0; i < eles_per_thread; i++) {
+        if (ele_id < size) {
+            // this should work.
+            keys[ele_id] = bounded_rand(&rand_state, ele_id);
+        }
+        __syncthreads();
+    }
+}
+
+// input should be either in GPU memory or mapped memory.
 template <typename T>
-void quick_permute(std::vector<T> data) {
+void quick_permute(T *input, size_t size) {
     // (1) partition the data into smaller chunks to avoid memory overhead of key per element
     // (2) compute the cummulative sum of the partition sizes
     // (3) collect the partitions back into a single array
     // (4) serially generate a key for each element and sort with radix sort.
-    T *input = data.data();
-    size_t size = data.size();
 
     cudaDeviceProp device_properties;
     check_cuda_error(cudaGetDeviceProperties(&device_properties, 0));
+    init_device_properties();
     auto config = QuickPermuteConfig_new(size, 8675309); // seed with a constant to have consistincy for now.
     QuickPermuteConfig *device_config;
+    // device_config->
     check_cuda_error(cudaMalloc((void**)&device_config, sizeof(QuickPermuteConfig)));
     check_cuda_error(cudaMemcpy(device_config, &config, sizeof(QuickPermuteConfig), cudaMemcpyHostToDevice));
 
@@ -262,9 +283,9 @@ void quick_permute(std::vector<T> data) {
     default_kernel.new_block_count(size);
 
     default_kernel.shared_size = device_properties.sharedMemPerBlock;
-    std::cout << "Shared size:" << default_kernel.shared_size << std::endl;
-    std::cout << "Shared size:" << device_properties.sharedMemPerBlockOptin << std::endl;
-    std::cout << "Shared size:" << device_properties.sharedMemPerMultiprocessor << std::endl;
+    // std::cout << "Shared size:" << default_kernel.shared_size << std::endl;
+    // std::cout << "Shared size:" << device_properties.sharedMemPerBlockOptin << std::endl;
+    // std::cout << "Shared size:" << device_properties.sharedMemPerMultiprocessor << std::endl;
 
     size_t *dummy_size_t = nullptr;
     size_t *host_sizes = alloc_pinned_array(config.pcount, dummy_size_t);
@@ -276,29 +297,72 @@ void quick_permute(std::vector<T> data) {
     default_kernel.output = device_output;
 
     default_stream.memcpy_to_device(device_sizes, host_sizes, config.pcount);
+    CudaEvent *start = default_stream.create_event();
+    printf("Starting to launch kernel.\n");
     default_stream.launch_kernel(default_kernel);
-    check_cuda_error(cudaDeviceSynchronize());
+    CudaEvent *end = default_stream.create_event();
     default_stream.memcpy_to_host(host_sizes, device_sizes, config.pcount);
     default_stream.join();
 
+    printf("Took %fms to execute partition kernel.\n", CudaEvent_elapsed_time(start, end));
+
+    delete start;
+    delete end;
+
     size_t last_size_value = 0;
+    int max_size_value = 0;
     for(int i = 0; i < config.pcount; i++) {
         size_t temp = host_sizes[i];
         host_sizes[i] += last_size_value;
         last_size_value = temp;
+        max_size_value = (int)std::max(last_size_value, (size_t)max_size_value);
     }
 
     T *device_final_output;
     check_cuda_error(cudaMalloc((void**)&device_final_output, sizeof(T) * size));
     default_stream.memcpy_to_device(device_sizes, host_sizes, config.pcount);
 
-    ConcatPartitionsKernel concat_kernel;
+    ConcatPartitionsKernel<T> concat_kernel;
     concat_kernel.partitions = device_output;
     concat_kernel.pcount = config.pcount;
     concat_kernel.cumm_part_sizes = device_sizes;
     concat_kernel.output = device_final_output;
 
     default_stream.launch_kernel(concat_kernel);
+    default_stream.join();
+
+    int *device_keys;
+    check_cuda_error(cudaMalloc((void**)&device_keys, sizeof(int) * max_size_value));
+
+    int *device_keys_out;
+    check_cuda_error(cudaMalloc((void**)&device_keys_out, sizeof(int) * max_size_value));
+
+    for (int partition = 0; partition < config.pcount; partition++) {
+        int partition_size;
+        T *values_input;
+        T *values_output;
+        if (partition == 0) {
+            partition_size = host_sizes[partition];
+            values_input = device_final_output;
+            values_output = input;
+        } else {
+            partition_size = host_sizes[partition] - host_sizes[partition-1];
+            values_input = device_final_output + host_sizes[partition-1];
+            values_output = input + host_sizes[partition-1];
+        }
+        int keys_block_count = divceil(partition_size, 32 * config.eles_per_thread);
+        generate_radix_keys<<<keys_block_count, 32>>>(device_keys, partition_size, config.eles_per_thread, 8675309 + 1 + partition);
+        check_cuda_error(cudaDeviceSynchronize());
+
+        void *temp_storage = nullptr;
+        // first is to determine storage requirements.
+        size_t temp_storage_size = 0;
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys, device_keys_out, values_input, values_output, partition_size);
+
+        check_cuda_error(cudaMalloc(&temp_storage, temp_storage_size));
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys, device_keys_out, values_input, values_output, partition_size);
+        cudaFree(temp_storage);
+    }
 
     // std::vector<UnrolledList<T>*> second_device_output(0);
     // second_device_output.reserve(config.pcount);

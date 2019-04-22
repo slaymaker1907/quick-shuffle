@@ -1,15 +1,11 @@
 #ifndef PERMUTE_UTIL
 #define PERMUTE_UTIL
 
-#include "cuda_polyfill.hpp"
-#include "stream_pool.hpp"
-#include <string>
-#include <assert.h>
-#include <algorithm>
-
 // taken from https://stackoverflow.com/questions/14038589/what-is-the-canonical-way-to-check-for-errors-using-the-cuda-runtime-api
 #define check_cuda_error(ans) do { gpuAssert((ans), __FILE__, __LINE__); } while(0)
+
 #define CCAST(expr, type) ((type)(expr))
+
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
    if (code != cudaSuccess) 
@@ -19,17 +15,23 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
+#include "cuda_polyfill.hpp"
+#include "stream_pool.hpp"
+#include <string>
+#include <assert.h>
+#include <algorithm>
+
 namespace cuda_permute
 {
 
 cudaDeviceProp DEVICE_PROPERTIES;
 
 void init_device_properties() {
-   check_cuda_error(cudaGetDeviceProperties(&device_properties, 0));
+   check_cuda_error(cudaGetDeviceProperties(&DEVICE_PROPERTIES, 0));
 }
 
 size_t max_cuda_threads() {
-   DEVICE_PROPERTIES.maxThreadPerMultiProcessor + DEVICE_PROPERTIES.multiProcessorCount;
+   return DEVICE_PROPERTIES.maxThreadsPerMultiProcessor + DEVICE_PROPERTIES.multiProcessorCount;
 }
 
 template<typename NumberT>
@@ -44,21 +46,19 @@ NumberT round_to_multiple(NumberT x, NumberT multiple_of) {
    return divceil(x, multiple_of) * multiple_of;
 }
 
-template<typename T>
-__global__ void malloc_on_gpu_kernel(T** result, size_t alloc_size) {
+__global__ void malloc_on_gpu_kernel(void** result, size_t alloc_size) {
    int tid = blockIdx.x * blockDim.x + threadIdx.x;
    result[tid] = malloc(alloc_size);
    assert(result[tid]);
 }
 
-template<typename T>
 class MallocOnGpuKernel {
 public:
-   T** result;
+   void** result;
    size_t alloc_size;
    int alloc_count;
    void run(cudaStream_t stream) {
-      malloc_on_gpu_kernel<<<alloc_count, 1, stream>>>(result, alloc_size);
+      malloc_on_gpu_kernel<<<alloc_count, 1, 0, stream>>>(result, alloc_size);
    }
 };
 
@@ -70,8 +70,8 @@ void malloc_on_gpu(T** result, int alloc_count, CudaStream *stream, size_t alloc
       alloc_size = sizeof(T);
    }
 
-   T **gpu_result;
-   check_cuda_error(cudaMalloc((void**)&gpu_result, sizeof(T*) * alloc_count));
+   void **gpu_result;
+   check_cuda_error(cudaMalloc((void**)&gpu_result, sizeof(void*) * alloc_count));
 
    MallocOnGpuKernel kernel;
    kernel.result = gpu_result;
@@ -80,10 +80,10 @@ void malloc_on_gpu(T** result, int alloc_count, CudaStream *stream, size_t alloc
 
    stream->launch_kernel(kernel);
 
-   stream->memcpy_to_host(result, gpu_result, alloc_count);
+   stream->memcpy_to_host(result, (T**)gpu_result, alloc_count);
 }
 
-const int CACHE_LINE_SIZE = 128;
+const int CACHE_LINE_SIZE = 32;
 
 // move one T* per block.
 __global__ void cudaMalloc_to_malloc_kernel(char* __restrict__ cudaMalloc_ptr,
@@ -122,26 +122,27 @@ public:
       int mem_per_thread;
       if (thread_target * CCAST(CACHE_LINE_SIZE, size_t) < thread_target) {
          thread_target = divceil(size, CCAST(CACHE_LINE_SIZE, size_t));
+         mem_per_thread = CACHE_LINE_SIZE;
       } else {
-         mem_per_thread = round_to_multiple(size, CACHE_LINE_SIZE);
+         mem_per_thread = (int)round_to_multiple(size, (size_t)CACHE_LINE_SIZE);
       }
 
       int block_size = 32; // arbitrary.
       int block_count = (int)divceil(size, CCAST(block_size, size_t) * CCAST(mem_per_thread, size_t));
-      cudaMalloc_to_malloc_kernel<<<block_count, block_size, stream>>>(cudaMalloc_ptr, malloc_ptr, mem_per_thread, size);
+      cudaMalloc_to_malloc_kernel<<<block_count, block_size, 0, stream>>>(cudaMalloc_ptr, malloc_ptr, mem_per_thread, size);
    }
 };
 
 template<typename T>
-void cudaMalloc_to_malloc(T* malloc_ptr, T* cudaMalloc_ptr, size_t alloc_count, cudaStream_t *stream, size_t alloc_size = 0) {
+void cudaMalloc_to_malloc(T* malloc_ptr, T* cudaMalloc_ptr, size_t alloc_count, CudaStream *stream, size_t alloc_size = 0) {
    if (alloc_size == 0) {
       alloc_size = sizeof(T);
    }
 
    size_t size_to_move = alloc_size * alloc_count;
    MallocToMallocKernel kernel;
-   kernel.cudaMalloc_ptr = cudaMalloc_ptr;
-   kernel.malloc_ptr = malloc_ptr;
+   kernel.cudaMalloc_ptr = (char*)cudaMalloc_ptr;
+   kernel.malloc_ptr = (char*)malloc_ptr;
    kernel.size = size_to_move;
 
    stream->launch_kernel(kernel);

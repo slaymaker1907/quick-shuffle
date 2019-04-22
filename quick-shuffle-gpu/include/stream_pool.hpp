@@ -41,8 +41,8 @@ public:
 
 class CudaEvent {
 private:
-    cudaEvent_t event;
     bool is_init;
+    cudaEvent_t event;
 public:
     CudaEvent() {
         is_init = false;
@@ -64,7 +64,18 @@ public:
     void wait(cudaStream_t stream) {
         check_cuda_error(cudaStreamWaitEvent(stream, event, 0));
     }
+
+    cudaEvent_t get_event() {
+        return event;
+    }
 };
+
+// returns time in ms.
+float CudaEvent_elapsed_time(CudaEvent *start, CudaEvent *end) {
+    float result;
+    check_cuda_error(cudaEventElapsedTime(&result, start->get_event(), end->get_event()));
+    return result;
+}
 
 class CudaStream {
 private:

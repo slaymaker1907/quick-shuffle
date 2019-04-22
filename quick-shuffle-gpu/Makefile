@@ -19,9 +19,10 @@ CU_DEPS = $(CU_OBJECTS:%.o=%.d)
 
 # flags #
 # CXX_FLAGS = -std=c++11 -Wall -Wextra -g
-INCLUDES = -I include/ ../cub-1.8.0/cub
-# CXX_FLAGS =--compiler-options=-Wall --Wreorder -O3 --std=c++14
-CXX_FLAGS =--compiler-options=-Wall -O0 --std=c++14 -lineinfo
+INCLUDES = -I include/ -I ../cub-1.8.0/cub
+CXX_FLAGS =--compiler-options=-Wall --Wreorder -O3 --std=c++14
+# CXX_FLAGS =--compiler-options=-Wall --std=c++14 -lineinfo
+# CXX_FLAGS =--compiler-options=-Wall --std=c++14 -G
 # Space-separated pkg-config libraries used by this project
 
 .PHONY: dirs

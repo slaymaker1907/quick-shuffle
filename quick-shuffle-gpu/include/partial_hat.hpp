@@ -8,13 +8,6 @@
 
 namespace cuda_permute
 {
-size_t div_ceil(size_t to_divide, size_t divisor) {
-    size_t result = to_divide / divisor;
-    if (result * divisor < divisor) {
-        ++result;
-    }
-    return result;
-}
 
 // This class is an array of arrays which is initially statically allocated.
 // The advantage is that it can be deallocated as you iterate through it with a max overhead of sqrt(size).

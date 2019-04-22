@@ -20,5 +20,11 @@ __device__ T* cuda_ptr_cas(volatile T **address, T *compare, T *value) {
     return cuda_ptr_cas((T**)address, compare, value);
 }
 
+template <class T>
+__device__ T* cuda_ptr_exch(T **address, T *value) {
+    static_assert(sizeof(T*) == sizeof(unsigned long long int));
+    return (T*)atomicExch(CCAST(address, unsigned long long int*), CCAST(value, unsigned long long int));
+}
+
 }
 #endif

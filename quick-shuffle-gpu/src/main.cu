@@ -4,8 +4,12 @@
 #include "cuda_polyfill.hpp"
 #include "permute_util.hpp"
 
-std::vector<int> make_sized_vector(size_t size) {
-    std::vector<int> result(size);
+int* make_sized_vector(size_t size) {
+
+    int *result;
+    check_cuda_error(cudaMallocManaged((void**)&result, size * sizeof(int)));
+    // result = cuda_permute::alloc_pinned_array(size, result);
+
     for (size_t i = 0; i < size; i++) {
         result[i] = i;
     }
@@ -13,11 +17,12 @@ std::vector<int> make_sized_vector(size_t size) {
 }
 
 int main() {
-    auto to_shuffle = make_sized_vector(10 * 1000 * 1000);
+    size_t shuffle_size = 100 * 1000 * 1000;
     check_cuda_error(cudaThreadSetLimit(cudaLimitMallocHeapSize, ((size_t)5) * 1000 * 1000 * 1000));
+    auto to_shuffle = make_sized_vector(shuffle_size);
     std::cout << "Starting to shuffle." << std::endl;
     try {
-        cuda_permute::quick_permute(to_shuffle);
+        cuda_permute::quick_permute(to_shuffle, shuffle_size);
     } catch (char const* msg) {
         std::cout << "Shuffle was not successful." << std::endl;
         std::cout << msg << std::endl;
