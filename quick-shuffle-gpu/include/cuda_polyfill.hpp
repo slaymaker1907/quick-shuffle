@@ -19,6 +19,7 @@ struct cudaError_t {
 CudaId threadIdx;
 CudaId blockIdx;
 CudaId blockDim;
+CudaId gridDim;
 
 struct curandState_t {
 };

@@ -10,6 +10,7 @@
 #include "permute_util.hpp"
 #include "unrolled_list.hpp"
 #include "stream_pool.hpp"
+#include "cub.cuh"
 
 namespace cuda_permute
 {
@@ -164,8 +165,65 @@ public:
     }
 };
 
+// template<typename T>
+// class SizedArray {
+// public:
+//     size_t size;
+//     T[] data;
+//     __device__ void append(T* buffer, int buffer_size) {
+//         size_t start = atomicAdd((unsigned long long*)size, (unsigned long long)buffer_size);
+//         memcpy(&data[start], buffer, buffer_size * sizeof(T));
+//     }
+// }
+
+template<typename T>
+__global__ void concat_partitions(UnrolledList<T> *partitions, int pcount, T* output, size_t *cumm_part_sizes) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    UnrolledList<T> input = tid < pcount ? partitions[tid] : partitions[0];
+    int input_block_size = input->block_size;
+    size_t start_ind = tid == 0 || tid >= pcount ? 0 : cumm_part_sizes[tid-1];
+    T* thr_out = output + start_ind;
+
+    __shared__ int max_node_count;
+    if (threadIdx.x == 0) {
+        max_node_count = 0;
+    }
+    __syncthreads();
+    if (tid < pcount) {
+        int my_count = input->node_count();
+        atomicMax(&max_node_count, my_count);
+    }
+    __syncthreads();
+
+    for (int i = 0; i < max_node_count; i++) {
+        if (tid < pcount && !input.is_empty()) {
+            thr_out += input.pop_to_buffer(thr_out, input_block_size);
+        }
+        // sync to avoid too much bandwidth.
+        __syncthreads();
+    }
+}
+
+template<typename T>
+class ConcatPartitionsKernel {
+public:
+    UnrolledList<T> *partitions;
+    T* output;
+    size_t *cumm_part_sizes;
+    int pcount;
+    void run(cudaStream_t stream) {
+        int block_size = 32;
+        int block_count = divceil(pcount, block_size);
+        concat_partitions<<<block_count, block_size>>>(partitions, pcount, output, cumm_part_sizes);
+    }
+};
+
 template <typename T>
 void quick_permute(std::vector<T> data) {
+    // (1) partition the data into smaller chunks to avoid memory overhead of key per element
+    // (2) compute the cummulative sum of the partition sizes
+    // (3) collect the partitions back into a single array
+    // (4) serially generate a key for each element and sort with radix sort.
     T *input = data.data();
     size_t size = data.size();
 
@@ -221,40 +279,61 @@ void quick_permute(std::vector<T> data) {
     default_stream.launch_kernel(default_kernel);
     check_cuda_error(cudaDeviceSynchronize());
     default_stream.memcpy_to_host(host_sizes, device_sizes, config.pcount);
-
-    std::vector<UnrolledList<T>*> second_device_output(0);
-    second_device_output.reserve(config.pcount);
-
-    std::vector<CudaStream*> partition_streams;
-    partition_streams.reserve(config.pcount);
-
-    for (int i = 0; i < config.pcount; i++) {
-        auto stream = new CudaStream();
-        partition_streams.push_back(stream);
-        UnrolledList<T> *device_temp;
-        check_cuda_error(cudaMalloc((void**)&device_temp, output_list_size));
-        second_device_output.push_back(device_temp);
-        stream->memcpy_to_device(device_temp, host_output, config.pcount);
-    }
-
-    // wait for default stream before continuing since we need the size of each partition to determine # of blocks.
     default_stream.join();
 
-    // TODO: make these global calls asynchronously and limit block_count.
-    for (int i = 0; i < config.pcount; i++) {
-        CudaStream *stream = partition_streams[i];
-        default_kernel.new_block_count(host_sizes[i]);
-        default_kernel.input = &device_output[i];
-        default_kernel.output = second_device_output[i];
-        stream->launch_kernel(default_kernel);
+    size_t last_size_value = 0;
+    for(int i = 0; i < config.pcount; i++) {
+        size_t temp = host_sizes[i];
+        host_sizes[i] += last_size_value;
+        last_size_value = temp;
     }
 
-    check_cuda_error(cudaDeviceSynchronize());
+    T *device_final_output;
+    check_cuda_error(cudaMalloc((void**)&device_final_output, sizeof(T) * size));
+    default_stream.memcpy_to_device(device_sizes, host_sizes, config.pcount);
 
-    for (CudaStream *stream : partition_streams) {
-        delete stream;
-    }
+    ConcatPartitionsKernel concat_kernel;
+    concat_kernel.partitions = device_output;
+    concat_kernel.pcount = config.pcount;
+    concat_kernel.cumm_part_sizes = device_sizes;
+    concat_kernel.output = device_final_output;
 
+    default_stream.launch_kernel(concat_kernel);
+
+    // std::vector<UnrolledList<T>*> second_device_output(0);
+    // second_device_output.reserve(config.pcount);
+
+    // std::vector<CudaStream*> partition_streams;
+    // partition_streams.reserve(config.pcount);
+
+    // for (int i = 0; i < config.pcount; i++) {
+    //     auto stream = new CudaStream();
+    //     partition_streams.push_back(stream);
+    //     UnrolledList<T> *device_temp;
+    //     check_cuda_error(cudaMalloc((void**)&device_temp, output_list_size));
+    //     second_device_output.push_back(device_temp);
+    //     stream->memcpy_to_device(device_temp, host_output, config.pcount);
+    // }
+
+    // // wait for default stream before continuing since we need the size of each partition to determine # of blocks.
+    // default_stream.join();
+
+    // // TODO: make these global calls asynchronously and limit block_count.
+    // for (int i = 0; i < config.pcount; i++) {
+    //     CudaStream *stream = partition_streams[i];
+    //     default_kernel.new_block_count(host_sizes[i]);
+    //     default_kernel.input = &device_output[i];
+    //     default_kernel.output = second_device_output[i];
+    //     stream->launch_kernel(default_kernel);
+    // }
+
+    // check_cuda_error(cudaDeviceSynchronize());
+
+    // for (CudaStream *stream : partition_streams) {
+    //     delete stream;
+    // }
+
+    free_pinned(host_sizes);
     free_pinned(host_output);
 }
 

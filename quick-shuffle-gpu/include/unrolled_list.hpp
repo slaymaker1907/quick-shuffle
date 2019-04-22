@@ -43,6 +43,20 @@ public:
         threadc_finding_node = 0;
     }
 
+    __device__ bool is_empty() {
+        return unfilled_block_list == nullptr;
+    }
+
+    __device__ int node_count() {
+        int result = 0;
+        UnrolledListNode<T> *current = (UnfilledListNode<T>*)unfilled_block_list;
+        while (current != nullptr) {
+            result++;
+            current = current->next_node;
+        }
+        return result;
+    }
+
     __device__ void push_many(T *data, int data_size) {
         while (data_size > 0) {
             UnrolledListNode<T> *insert_into = nullptr;
@@ -216,6 +230,14 @@ UnrolledList<T>* move_to_gpu(T const* input, size_t size) {
 
     UnrolledListNode<T> *last_device_node = nullptr;
 
+    CudaStream stream1, stream2;
+
+    UnrolledListNode *device_node_cudaMalloc;
+    check_cuda_error(cudaMalloc((void**)&device_node, node_size));
+
+    UnrolledListNode **page_locked_node;
+    page_locked_node = alloc_pinned(page_locked_node);
+
     // TODO: fix this by making sure we only call malloc on the GPU.
     while (size > 0) {
         int to_move = (int)std::min((size_t)block_size, size);
@@ -223,14 +245,20 @@ UnrolledList<T>* move_to_gpu(T const* input, size_t size) {
         host_node->next_node = last_device_node;
         memcpy(&host_node->data[0], input, to_move * sizeof(T));
 
-        UnrolledListNode<T> *device_node;
-        check_cuda_error(cudaMalloc((void**)&device_node, node_size));
-        check_cuda_error(cudaMemcpy(device_node, host_node, node_size, cudaMemcpyHostToDevice));
+        stream1.memcpy_to_device(CCAST(device_node_cudaMalloc, char*), CCAST(host_node, char*), node_size);
+        malloc_on_gpu(page_locked_node, 1, &stream2, node_size);
 
-        last_device_node = device_node;
+        stream1.join();
+        stream2.join();
+
+        cudaMalloc_to_malloc(*page_locked_node, device_node_cudaMalloc, 1, &stream2, node_size);
+
+        last_device_node = *page_locked_node;
         size -= to_move;
         input = input + to_move;
     }
+
+    free_pinned(page_locked_node);
 
     // now finally create the actual list.
     UnrolledList<T> host_list(block_size);
@@ -242,11 +270,23 @@ UnrolledList<T>* move_to_gpu(T const* input, size_t size) {
     }
 
     check_cuda_error(cudaMalloc((void**)&device_list, sizeof(UnrolledList<T>)));
-    check_cuda_error(cudaMemcpy(device_list, &host_list, sizeof(UnrolledList<T>), cudaMemcpyHostToDevice));
+    stream1.memcpy_to_device(device_list, &host_list);
+    check_cuda_error(cudaDeviceSynchronize());
 
     free(host_node);
 
     return device_list;
+}
+
+
+template <class T>
+void copy_list_to_cpu(T *output, UnrolledList *input, size_t size) {
+    double dbsqrt = sqrt((double)size);
+    int output_buffer_size = (int)ceil(dbsqrt);
+    assert(output_buffer_size > 0);
+
+    while (size > 0) {
+    }
 }
 
 }
