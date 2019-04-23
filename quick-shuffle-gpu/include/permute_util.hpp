@@ -35,7 +35,7 @@ size_t max_cuda_threads() {
 }
 
 template<typename NumberT>
-NumberT divceil(NumberT a, NumberT b) {
+__device__ __host__ NumberT divceil(NumberT a, NumberT b) {
    NumberT result = a / b;
    result += (result * b < a) ? 1 : 0;
    return result;

@@ -11,6 +11,7 @@
 #include "unrolled_list.hpp"
 #include "stream_pool.hpp"
 #include "cub.cuh"
+#include <chrono>
 
 namespace cuda_permute
 {
@@ -19,6 +20,7 @@ struct QuickPermuteConfig {
     size_t *partition_sizes;
     int pcount;
     int eles_per_thread;
+    int shared_size;
     int seed;
     int bucket_size;
 };
@@ -31,6 +33,7 @@ QuickPermuteConfig QuickPermuteConfig_new(int input_size, int seed) {
     result.seed = seed;
     result.bucket_size = 32;
     result.partition_sizes = nullptr;
+    result.shared_size = 20 * 1024;
 
     return result;
 }
@@ -59,28 +62,20 @@ __global__ void quick_permute_partition(UnrolledList<T> *input,
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int *buffer_occupied = (int*)dyn_shared;
-    T *input_buffer = (T*)(buffer_occupied + 1);
-    int input_buffer_size = config->eles_per_thread * blockDim.x * sizeof(T);
-    int *bucket_sizes = (int*)(input_buffer + input_buffer_size);
+    int *bucket_sizes = (int*)dyn_shared;
     T *bucket_data = (T*)(bucket_sizes + config->pcount);
     int bucket_data_size = config->pcount * sizeof(T);
 
-    if (threadIdx.x == 0) {
-        // first copy over data from main memory to shared memory.
-        int remaining = config->eles_per_thread * blockDim.x;
-        *buffer_occupied = 0;
-        do {
-            int filledc = input->pop_to_buffer(input_buffer + (*buffer_occupied), remaining);
-            *buffer_occupied = (*buffer_occupied) + filledc;
-            if (filledc == 0) {
-                // no more elements in input.
-                break;
-            }
+    int *buffer_occupied = (int*)dyn_shared;
+    T *input_buffer = (T*)(buffer_occupied + 1);
+    int input_buffer_offset = sizeof(int) * config->pcount // bucket_sizes
+                            + bucket_data_size             // bucket_data
+                            + sizeof(int);                 // buffer_occupied (size used).
+    int input_buffer_size = config->shared_size - input_buffer_offset;
+    int input_buffer_eles = input_buffer_size / sizeof(T);
+    int buffer_per_thread = input_buffer_eles / blockDim.x;
+    int tile_iters_needed = divceil(config->eles_per_thread, buffer_per_thread);
 
-            remaining = input_buffer_size - (*buffer_occupied);
-        } while (remaining > 0);
-    }
     // now initialize bucket sizes.
     for (int partition = threadIdx.x; partition < config->pcount; partition += blockDim.x) {
         bucket_sizes[partition] = 0;
@@ -95,41 +90,65 @@ __global__ void quick_permute_partition(UnrolledList<T> *input,
     curand_init(config->seed, tid, 0, &rand_state); // sequence should be tid to ensure independence.
 
     // check in inner loop if valid so we can syncthreads.
-    for (int i = 0; i < config->eles_per_thread; i++) {
-        size_t input_index = (size_t)threadIdx.x + blockDim.x * i;
-        int partition = bounded_rand(&rand_state, config->pcount, rng_threshold);
-
-        // first move to partition if we were able to fit it in the partition.
-        int *pbucket_size = bucket_sizes + partition;
-        T *pbucket_data = bucket_data + bucket_data_size;
-
-        int old_size = 0;
-        bool move_element = input_index < (*buffer_occupied);
-
-        do {
-            // first increment size of the partition.
-            if (move_element) {
-                old_size = atomicAdd(pbucket_size, 1);
-            }
-
-            // check to see if we can write to the bucket.
-            if (move_element && (old_size < config->bucket_size)) {
-                pbucket_data[old_size] = input_buffer[input_index];
-                move_element = false;
-            }
-
-            // sync in case we need to move to global memory.
-            __syncthreads();
-
-            // make more room if full.
-            if (move_element && (old_size == config->bucket_size)) {
-                if (config->partition_sizes) {
-                    atomicAdd((unsigned long long int*)&config->partition_sizes[partition], (unsigned long long int)config->bucket_size);
+    for (int tile = 0; tile < tile_iters_needed; tile++) {
+        // fill the buffer.
+        if (threadIdx.x == 0) {
+            // first copy over data from main memory to shared memory.
+            int remaining = input_buffer_size / sizeof(T);
+            *buffer_occupied = 0;
+            do {
+                int filledc = input->pop_to_buffer(input_buffer + (*buffer_occupied), remaining);
+                *buffer_occupied = (*buffer_occupied) + filledc;
+                if (filledc == 0) {
+                    // no more elements in input.
+                    break;
                 }
-                output[partition].push_many(pbucket_data, config->bucket_size);
-                *pbucket_size = 0;
-            }
-        } while (__syncthreads_or(move_element));
+
+                remaining = input_buffer_size - (*buffer_occupied);
+            } while (remaining > 0);
+        }
+
+        //int tile_offset = tile * buffer_per_thread;
+
+        // sync the buffer.
+        __syncthreads();
+
+        for (int i = 0; i < buffer_per_thread; i++) {
+            int input_index = threadIdx.x + blockDim.x * i;
+            int partition = bounded_rand(&rand_state, config->pcount, rng_threshold);
+
+            // first move to partition if we were able to fit it in the partition.
+            int *pbucket_size = bucket_sizes + partition;
+            T *pbucket_data = bucket_data + bucket_data_size;
+
+            int old_size = 0;
+            bool move_element = input_index < (*buffer_occupied);
+
+            do {
+                // first increment size of the partition.
+                if (move_element) {
+                    old_size = atomicAdd(pbucket_size, 1);
+                }
+
+                // check to see if we can write to the bucket.
+                if (move_element && (old_size < config->bucket_size)) {
+                    pbucket_data[old_size] = input_buffer[input_index];
+                    move_element = false;
+                }
+
+                // sync in case we need to move to global memory.
+                __syncthreads();
+
+                // make more room if full.
+                if (move_element && (old_size == config->bucket_size)) {
+                    if (config->partition_sizes) {
+                        atomicAdd((unsigned long long int*)&config->partition_sizes[partition], (unsigned long long int)config->bucket_size);
+                    }
+                    output[partition].push_many(pbucket_data, config->bucket_size);
+                    *pbucket_size = 0;
+                }
+            } while (__syncthreads_or(move_element));
+        }
     }
 
     // don't need __syncthreads since the above loop always ends with one.
@@ -154,19 +173,11 @@ public:
     QuickPermuteConfig *config;
     int block_count;
     int block_size;
-    int eles_per_thread;
 
     QuickPermuteKernel() {
     }
     void run(cudaStream_t stream) {
         quick_permute_partition<<<block_count, block_size, shared_size, stream>>>(input, output, config);
-    }
-    void new_block_count(size_t input_size) {
-        int eles_per_block = eles_per_thread * block_size;
-        block_count = (int)(input_size / (size_t)eles_per_block);
-        if (((size_t) block_count) * ((size_t) eles_per_block) < input_size) {
-            block_count++;
-        }
     }
 };
 
@@ -250,6 +261,14 @@ void quick_permute(T *input, size_t size) {
     check_cuda_error(cudaGetDeviceProperties(&device_properties, 0));
     init_device_properties();
     auto config = QuickPermuteConfig_new(size, 8675309); // seed with a constant to have consistincy for now.
+
+    // need to compute eles_per_thread based on data size.
+    int max_blocks = 128;
+    int threads_per_block = 32;
+    int min_eles_per_thread = std::max(32 * sizeof(int) / sizeof(T), (size_t)1);
+    int total_max_threads = max_blocks * threads_per_block;
+    config.eles_per_thread = std::max((int)divceil(size, (size_t)total_max_threads), min_eles_per_thread);
+
     QuickPermuteConfig *device_config;
     // device_config->
     check_cuda_error(cudaMalloc((void**)&device_config, sizeof(QuickPermuteConfig)));
@@ -257,7 +276,6 @@ void quick_permute(T *input, size_t size) {
 
     QuickPermuteKernel<T> default_kernel;
     default_kernel.config = device_config;
-    default_kernel.eles_per_thread = config.eles_per_thread;
 
     UnrolledList<T> *device_input = move_to_gpu(input, size);
     UnrolledList<T> *device_output;
@@ -279,10 +297,10 @@ void quick_permute(T *input, size_t size) {
     CudaStream default_stream;
     default_stream.memcpy_to_device(device_output, host_output, config.pcount);
 
-    default_kernel.block_size = 32;
-    default_kernel.new_block_count(size);
+    default_kernel.block_size = threads_per_block;
+    default_kernel.block_count = std::min(max_blocks, CCAST(divceil(size, (size_t)threads_per_block * config.eles_per_thread), int));
 
-    default_kernel.shared_size = device_properties.sharedMemPerBlock;
+    default_kernel.shared_size = config.shared_size;
     // std::cout << "Shared size:" << default_kernel.shared_size << std::endl;
     // std::cout << "Shared size:" << device_properties.sharedMemPerBlockOptin << std::endl;
     // std::cout << "Shared size:" << device_properties.sharedMemPerMultiprocessor << std::endl;
@@ -296,6 +314,7 @@ void quick_permute(T *input, size_t size) {
     default_kernel.input = device_input;
     default_kernel.output = device_output;
 
+    auto start_chron = std::chrono::high_resolution_clock::now();
     default_stream.memcpy_to_device(device_sizes, host_sizes, config.pcount);
     CudaEvent *start = default_stream.create_event();
     printf("Starting to launch kernel.\n");
@@ -305,7 +324,6 @@ void quick_permute(T *input, size_t size) {
     default_stream.join();
 
     printf("Took %fms to execute partition kernel.\n", CudaEvent_elapsed_time(start, end));
-
     delete start;
     delete end;
 
@@ -320,6 +338,7 @@ void quick_permute(T *input, size_t size) {
 
     T *device_final_output;
     check_cuda_error(cudaMalloc((void**)&device_final_output, sizeof(T) * size));
+    start = default_stream.create_event();
     default_stream.memcpy_to_device(device_sizes, host_sizes, config.pcount);
 
     ConcatPartitionsKernel<T> concat_kernel;
@@ -329,7 +348,14 @@ void quick_permute(T *input, size_t size) {
     concat_kernel.output = device_final_output;
 
     default_stream.launch_kernel(concat_kernel);
+    end = default_stream.create_event();
     default_stream.join();
+
+    printf("Took %fms to execute collect partitions.\n", CudaEvent_elapsed_time(start, end));
+    delete start;
+    delete end;
+
+    start = default_stream.create_event();
 
     int *device_keys;
     check_cuda_error(cudaMalloc((void**)&device_keys, sizeof(int) * max_size_value));
@@ -357,12 +383,25 @@ void quick_permute(T *input, size_t size) {
         void *temp_storage = nullptr;
         // first is to determine storage requirements.
         size_t temp_storage_size = 0;
-        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys, device_keys_out, values_input, values_output, partition_size);
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys,
+                device_keys_out, values_input, values_output, partition_size, 0, sizeof(int) * 8, default_stream.wrapped_stream);
 
         check_cuda_error(cudaMalloc(&temp_storage, temp_storage_size));
-        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys, device_keys_out, values_input, values_output, partition_size);
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_size, device_keys,
+                device_keys_out, values_input, values_output, partition_size, 0, sizeof(int) * 8, default_stream.wrapped_stream);
+        default_stream.join();
         cudaFree(temp_storage);
     }
+
+    end = default_stream.create_event();
+    default_stream.join();
+    printf("Took %fms to sort all partitions.\n", CudaEvent_elapsed_time(start, end));
+    delete start;
+    delete end;
+
+    auto end_chron = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration<double>(end_chron - start_chron);
+    std::cout << "Elapsed time: " << elapsed.count() * 1000.0 << " ms" << std::endl;
 
     // std::vector<UnrolledList<T>*> second_device_output(0);
     // second_device_output.reserve(config.pcount);

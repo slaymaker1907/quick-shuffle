@@ -42,8 +42,8 @@ public:
 class CudaEvent {
 private:
     bool is_init;
-    cudaEvent_t event;
 public:
+    cudaEvent_t event;
     CudaEvent() {
         is_init = false;
         check_cuda_error(cudaEventCreate(&event));
@@ -79,9 +79,9 @@ float CudaEvent_elapsed_time(CudaEvent *start, CudaEvent *end) {
 
 class CudaStream {
 private:
-    cudaStream_t wrapped_stream;
     bool is_stream_init;
 public:
+    cudaStream_t wrapped_stream;
     CudaStream() {
         is_stream_init = false;
         check_cuda_error(cudaStreamCreate(&wrapped_stream));
