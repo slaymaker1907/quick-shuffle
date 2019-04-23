@@ -1,0 +1,8 @@
+[package]
+name = "quickshuffle-serial-shuffle"
+version = "0.1.0"
+authors = ["slaymaker1907 <dyllongagnier@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+rand = "0.6.1"
