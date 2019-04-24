@@ -1,6 +1,7 @@
 CXX=g++
 CXXFLAGS=-std=c++11 -Wall -Wextra -O3
-LINKERS=-ltbb -pthread
+LINKERS=-pthread
+# LINKER=
 
 all: shuffle
 

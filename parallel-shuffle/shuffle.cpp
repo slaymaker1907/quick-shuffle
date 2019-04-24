@@ -2,33 +2,139 @@
 #include <random>
 #include <chrono>
 #include <algorithm>
+#include <new>
+#include <vector>
+#include <utility>
 
-#include <tbb/concurrent_vector.h>
+#include "HeapSet.hpp"
 #include "ThreadPool.hpp"
-
-using namespace tbb;
 
 std::random_device rd;
 std::minstd_rand gen(rd());
 
-void fisher_yates(concurrent_vector<size_t>& arr) {
+template<typename NumberT>
+NumberT divceil(NumberT a, NumberT b) {
+    NumberT result = a / b;
+    return (result * b) < a ? result + 1 : result;
+}
+
+template<typename T>
+void fisher_yates(T *data, size_t size, std::mt19937_64 *rng) {
     //printf("This partition has %zu items...\n", arr.size());
-    for (size_t i = arr.size() - 1; i > 0; --i) {
-        std::uniform_int_distribution<size_t> dis(0, i);
-        size_t j = dis(gen);
-        size_t t = arr[i];
-        arr[i] = arr[j];
-        arr[j] = t;
+    size_t size_bound = size - 1;
+    for (size_t i = 0; i < size_bound; i++) {
+        std::uniform_int_distribution<size_t> dis(0, size_bound);
+        size_t swap_with = dis(*rng);
+        std::swap(data[i], data[swap_with]);
     }
 }
 
-void assign_partition(size_t arr[], size_t length, 
-                      concurrent_vector<size_t> parts[],
-                      size_t n_parts) {
-    std::uniform_int_distribution<size_t> dis(0, n_parts - 1);
-    for (size_t i = 0; i < length; ++i) {
-        parts[dis(gen)].push_back(arr[i]);
+template<typename T>
+void assign_partition(T *input,
+                      size_t size,
+                      size_t pcount,
+                      cuda_permute::HeapSet<T> *partitions,
+                      std::mt19937_64 rng) {
+    auto **node_buffers = (cuda_permute::HeapSetNode<T> **)malloc(sizeof(cuda_permute::HeapSetNode<T>*) * pcount);
+    assert(node_buffers);
+    for (size_t p = 0; p < pcount; p++) {
+        node_buffers[p] = partitions[p].new_node();
     }
+    size_t buffer_capacity = partitions[0].get_node_size();
+
+    std::uniform_int_distribution<size_t> dis(0, pcount-1);
+    for (size_t i = 0; i < size; i++) {
+        size_t partition = dis(rng);
+
+        cuda_permute::HeapSetNode<T> *buffer = node_buffers[partition];
+        if (buffer->size() >= buffer_capacity) {
+            buffer = partitions[partition].new_node();
+            node_buffers[partition] = buffer;
+        }
+
+        buffer->push_back(input[i]);
+    }
+    free(node_buffers);
+}
+
+template<typename T>
+void shuffle_partition(cuda_permute::HeapSet<T> *input, T *output, std::mt19937_64 rng) {
+    size_t size = input->get_size();
+    input->move_to_buffer(output);
+    fisher_yates(output, size, &rng);
+}
+
+int* generate_input(size_t size) {
+    int *result = (int*)malloc(size * sizeof(int));
+    assert(result);
+    for (size_t i = 0; i < size; i++) {
+        result[i] = i;
+    }
+    return result;
+}
+
+size_t size_sqrt(size_t n) {
+    return (size_t)std::ceil(n);
+}
+
+template<typename T>
+void parallel_shuffle(T *input, size_t size, size_t seed = 8675309) {
+    size_t thread_count = std::thread::hardware_concurrency();
+    ThreadPool pool(thread_count);
+    size_t pcount = size_sqrt(size);
+    size_t part_block_size = size_sqrt(pcount);
+
+    cuda_permute::HeapSet<T> *partitions = (cuda_permute::HeapSet<T>*)malloc(sizeof(cuda_permute::HeapSet<T>) * pcount);
+    assert(partitions);
+    for (size_t part = 0; part < pcount; part++) {
+        new(partitions + part) cuda_permute::HeapSet<T>(part_block_size);
+    }
+
+    std::mt19937_64 base_generator(seed);
+    // std::mtr19937_64 *thread_rngs = malloc(sizeof(std::mtr19937_64) * pcount);
+    // assert(thread_rngs);
+    // for (size_t i = 0; i < thread_count; i++) {
+    //     new(thread_rngs + i) std::mtr19937_64(base_generator());
+    // }
+
+    std::vector<std::future<void>> partition_futures(0);
+    partition_futures.reserve(thread_count);
+
+    size_t eles_per_thread = divceil(size, (size_t)thread_count);
+    size_t unpartitioned = size;
+    T *unpartitioned_start = input;
+
+    for (size_t i = 0; i < thread_count && unpartitioned > 0; i++) {
+        size_t to_partition = std::min(unpartitioned, eles_per_thread);
+        std::mt19937_64 thread_rng(base_generator);
+        // assign_partition(unpartitioned_start, to_partition, pcount, partitions, thread_rng);
+        partition_futures.emplace_back(pool.enqueue(assign_partition, unpartitioned_start, to_partition, pcount, partitions, thread_rng));
+
+        unpartitioned -= to_partition;
+        unpartitioned_start += to_partition;
+    } 
+
+    for (auto &future : partition_futures) {
+        future.get();
+    }
+    partition_futures.clear();
+
+    T *output = input;
+
+    for (size_t p = 0; p < pcount; p++) {
+        cuda_permute::HeapSet<T> *partition = partitions + p;
+        std::mt19937_64 part_rng(base_generator);
+        // shuffle_partition(partition, output, part_rng);
+        partition_futures.emplace_back(pool.enqueue(shuffle_partition, partition, output, part_rng));
+        output += partition->get_size();
+    }
+
+    for (auto &future : partition_futures) {
+        future.get();
+    }
+
+    // free(thread_rngs);
+    free(partitions);
 }
 
 int main(int argc, char* argv[]) {
@@ -39,47 +145,14 @@ int main(int argc, char* argv[]) {
 
     printf("Generating the input vector...\n");
     size_t n = std::atoll(argv[1]);
-    size_t* data = new size_t[n];
-    std::uniform_int_distribution<size_t> dis(0, 200000000);
-    for (size_t i = 0; i < n; ++i) data[i] = dis(gen);
+    int *input = generate_input(n);
  
-    ThreadPool pool(std::thread::hardware_concurrency());
-    size_t n_parts = (size_t)std::ceil(std::sqrt(n));
-    size_t part_size = (size_t)(std::ceil((double)n / n_parts));
-    printf("n_parts: %zu, part_size: %zu\n", n_parts, part_size);
-    auto parts = new concurrent_vector<size_t>[n_parts];
-    for (size_t i = 0; i < n_parts; ++i) {
-        parts[i].reserve(part_size);
-    }
-
     auto begin = std::chrono::high_resolution_clock::now();
-    std::vector<std::future<void>> res;
-    for (size_t i = 0; i < n_parts; ++i) {
-        auto arr = data + i * part_size;
-        auto len = (i == n_parts - 1) ? (n - i * part_size) : part_size;
-        res.emplace_back(pool.enqueue(assign_partition, arr, len, parts, n_parts));
-    }
-
-    for (auto& f: res) {
-        f.get();
-    }
-    res.clear();
-
-
-    for (size_t i = 0; i < n_parts; ++i) {
-        res.emplace_back(pool.enqueue(fisher_yates, parts[i]));
-    }
-    
-    for (auto& f: res) {
-        f.get();
-    }
-    res.clear();
-
+    parallel_shuffle(input, n);
     auto end = std::chrono::high_resolution_clock::now();
     printf("Shuffle takes: %.6fs\n", std::chrono::duration<double>(end - begin).count());
 
-    delete[] data;
-    delete[] parts;
+    free(input);
 
     return 0;
 }
