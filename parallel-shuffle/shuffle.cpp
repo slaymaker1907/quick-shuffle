@@ -76,7 +76,7 @@ int* generate_input(size_t size) {
 }
 
 size_t size_sqrt(size_t n) {
-    return (size_t)std::ceil(n);
+    return (size_t)std::ceil(sqrt(n));
 }
 
 template<typename T>
