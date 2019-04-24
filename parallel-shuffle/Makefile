@@ -3,11 +3,11 @@ CXXFLAGS=-std=c++11 -Wall -Wextra -O3
 LINKERS=-pthread
 # LINKER=
 
-all: shuffle
+all: benchmark
 
-shuffle: shuffle.cpp ThreadPool.hpp
+benchmark: shuffle.cpp ThreadPool.hpp
 	$(CXX) $< $(CXXFLAGS) -o $@ $(LINKERS)
 
 clean:
-	rm -rf shuffle
+	rm -rf shuffle shuffle.exe benchmark benchmark.exe
 
