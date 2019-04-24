@@ -23,7 +23,7 @@ void fisher_yates(T *data, size_t size, std::mt19937_64 *rng) {
     //printf("This partition has %zu items...\n", arr.size());
     size_t size_bound = size - 1;
     for (size_t i = 0; i < size_bound; i++) {
-        std::uniform_int_distribution<size_t> dis(0, size_bound);
+        std::uniform_int_distribution<size_t> dis(i, size_bound);
         size_t swap_with = dis(*rng);
         std::swap(data[i], data[swap_with]);
     }
