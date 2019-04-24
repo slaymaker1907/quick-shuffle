@@ -49,7 +49,9 @@ void assign_partition(T *input,
 
         cuda_permute::HeapSetNode<T> *buffer = node_buffers[partition];
         if (buffer->size() >= buffer_capacity) {
-            buffer = partitions[partition].new_node();
+            auto full_part = partitions + partition;
+            full_part->add_to_size(buffer->size());
+            buffer = full_part->new_node();
             node_buffers[partition] = buffer;
         }
 
