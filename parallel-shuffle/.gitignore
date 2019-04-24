@@ -1,3 +1,4 @@
 .vscode
 shuffle
 benchmark
+*.exe
