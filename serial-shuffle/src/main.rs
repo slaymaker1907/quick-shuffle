@@ -674,7 +674,7 @@ unsafe fn median_of_five<T, K, F>(data: &[T], func: F) -> usize
     inds_arr[total_len / 2]
 }
 
-static SHUFF_SIZE: usize = 100_000_000;
+static SHUFF_SIZE: usize = 500_000_000;
 
 fn main() {
     let mut gen = SmallRng::from_entropy();

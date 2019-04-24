@@ -15,7 +15,7 @@ int* make_sized_vector(size_t size) {
 }
 
 int main() {
-    size_t shuffle_size = 1000 * 1000 * 1000;
+    size_t shuffle_size = 500 * 1000 * 1000;
     check_cuda_error(cudaDeviceSetLimit(cudaLimitMallocHeapSize, ((size_t)6) * 1000 * 1000 * 1000));
     auto to_shuffle = make_sized_vector(shuffle_size);
     std::cout << "Starting to shuffle." << std::endl;

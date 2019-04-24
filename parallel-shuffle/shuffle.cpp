@@ -29,7 +29,8 @@ void fisher_yates(T *data, size_t size, std::mt19937_64 *rng) {
     }
 }
 
-template<typename T>
+#define T int
+//template<typename T>
 void assign_partition(T *input,
                       size_t size,
                       size_t pcount,
@@ -57,12 +58,13 @@ void assign_partition(T *input,
     free(node_buffers);
 }
 
-template<typename T>
+//template<typename T>
 void shuffle_partition(cuda_permute::HeapSet<T> *input, T *output, std::mt19937_64 rng) {
     size_t size = input->get_size();
     input->move_to_buffer(output);
     fisher_yates(output, size, &rng);
 }
+#undef T
 
 int* generate_input(size_t size) {
     int *result = (int*)malloc(size * sizeof(int));

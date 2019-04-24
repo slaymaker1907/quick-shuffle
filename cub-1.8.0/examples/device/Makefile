@@ -148,7 +148,7 @@ example_device_radix_sort: bin/example_device_radix_sort_$(BIN_SUFFIX)
 
 bin/example_device_radix_sort_$(BIN_SUFFIX) : example_device_radix_sort.cu $(DEPS)
 	mkdir -p bin
-	$(NVCC) $(DEFINES) $(SM_TARGETS) -o bin/example_device_radix_sort_$(BIN_SUFFIX) example_device_radix_sort.cu $(NVCCFLAGS) $(CPU_ARCH) $(INC) $(LIBS) -O3
+	$(NVCC) --std=c++14 $(DEFINES) $(SM_TARGETS) -o bin/example_device_radix_sort_$(BIN_SUFFIX) example_device_radix_sort.cu $(NVCCFLAGS) $(CPU_ARCH) $(INC) $(LIBS) -O3
 
 
 #-------------------------------------------------------------------------------

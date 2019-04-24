@@ -41,9 +41,12 @@
 
 #include <stdio.h>
 #include <algorithm>
+#include <chrono>
 
 #include <cub/util_allocator.cuh>
 #include <cub/device/device_radix_sort.cuh>
+#include <curand.h>
+#include <curand_kernel.h>
 
 #include "../../test/test_util.h"
 
@@ -131,6 +134,33 @@ void Initialize(
     delete[] h_pairs;
 }
 
+#include <algorithm>
+
+__global__ void generate_random_keys(unsigned int *output, size_t size, int eles_per_thread, int seed) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    curandState_t rng;
+    curand_init(seed, tid, 0, &rng);
+
+    size_t block_start = blockIdx.x * blockDim.x * eles_per_thread;
+    int to_process = 0;
+    if (block_start + threadIdx.x + eles_per_thread < size) {
+        to_process = eles_per_thread;
+    } else if (block_start + threadIdx.x < size) {
+        to_process = size - block_start + threadIdx.x;
+    }
+    unsigned int *output_start = output + block_start + threadIdx.x;
+
+    for (int i = 0; i < eles_per_thread; i++) {
+        if (i < to_process) {
+            unsigned int result = curand(&rng);
+            *output_start = result;
+            output_start += blockDim.x;
+        }
+
+        __syncthreads();
+    }
+}
+
 
 //---------------------------------------------------------------------
 // Main
@@ -141,7 +171,7 @@ void Initialize(
  */
 int main(int argc, char** argv)
 {
-    int num_items = 150;
+    size_t num_items = 500000000;
 
     // Initialize command line
     CommandLineArgs args(argc, argv);
@@ -162,7 +192,7 @@ int main(int argc, char** argv)
     // Initialize device
     CubDebugExit(args.DeviceInit());
 
-    printf("cub::DeviceRadixSort::SortPairs() %d items (%d-byte keys %d-byte values)\n",
+    printf("cub::DeviceRadixSort::SortPairs() %zu items (%d-byte keys %d-byte values)\n",
         num_items, int(sizeof(float)), int(sizeof(int)));
     fflush(stdout);
 
@@ -177,11 +207,11 @@ int main(int argc, char** argv)
 
     // Allocate device arrays
     DoubleBuffer<float> d_keys;
-    DoubleBuffer<int>   d_values;
+    DoubleBuffer<unsigned int>   d_values;
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_keys.d_buffers[0], sizeof(float) * num_items));
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_keys.d_buffers[1], sizeof(float) * num_items));
-    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_values.d_buffers[0], sizeof(int) * num_items));
-    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_values.d_buffers[1], sizeof(int) * num_items));
+    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_values.d_buffers[0], sizeof(unsigned int) * num_items));
+    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_values.d_buffers[1], sizeof(unsigned int) * num_items));
 
     // Allocate temporary storage
     size_t  temp_storage_bytes  = 0;
@@ -190,20 +220,35 @@ int main(int argc, char** argv)
     CubDebugExit(DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_keys, d_values, num_items));
     CubDebugExit(g_allocator.DeviceAllocate(&d_temp_storage, temp_storage_bytes));
 
+    int max_blocks = 64;
+    int threads_per_block = 64;
+    int eles_per_thread = (int)(num_items / (max_blocks * threads_per_block));
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    generate_random_keys<<<max_blocks, threads_per_block>>>((unsigned int *)d_values.d_buffers[0], num_items, eles_per_thread, 8675309);
+    CubDebugExit(cudaDeviceSynchronize());
+
     // Initialize device arrays
-    CubDebugExit(cudaMemcpy(d_keys.d_buffers[d_keys.selector], h_keys, sizeof(float) * num_items, cudaMemcpyHostToDevice));
-    CubDebugExit(cudaMemcpy(d_values.d_buffers[d_values.selector], h_values, sizeof(int) * num_items, cudaMemcpyHostToDevice));
+    CubDebugExit(cudaMemcpy(d_values.d_buffers[d_values.selector], h_values, sizeof(unsigned int) * num_items, cudaMemcpyHostToDevice));
 
     // Run
     CubDebugExit(DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_keys, d_values, num_items));
 
     // Check for correctness (and display results, if specified)
+    /*
     int compare = CompareDeviceResults(h_reference_keys, d_keys.Current(), num_items, true, g_verbose);
     printf("\t Compare keys (selector %d): %s\n", d_keys.selector, compare ? "FAIL" : "PASS");
     AssertEquals(0, compare);
     compare = CompareDeviceResults(h_reference_values, d_values.Current(), num_items, true, g_verbose);
     printf("\t Compare values (selector %d): %s\n", d_values.selector, compare ? "FAIL" : "PASS");
     AssertEquals(0, compare);
+    */
+    CubDebugExit(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration<double>(end - start);
+    std::cout << "Took " << duration.count() * 1000.0 << " ms to run\n" << std::endl;
+
 
     // Cleanup
     if (h_keys) delete[] h_keys;
