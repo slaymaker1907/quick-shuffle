@@ -19,12 +19,13 @@ NumberT divceil(NumberT a, NumberT b) {
 }
 
 template<typename T>
-void fisher_yates(T *data, size_t size, std::mt19937_64 *rng) {
+void fisher_yates(T *data, size_t size, std::mt19937_64 &rng) {
     //printf("This partition has %zu items...\n", arr.size());
     size_t size_bound = size - 1;
     for (size_t i = 0; i < size_bound; i++) {
         std::uniform_int_distribution<size_t> dis(i, size_bound);
-        size_t swap_with = dis(*rng);
+        size_t swap_with = dis(rng);
+        // assert(swap_with >= i && swap_with < size);
         std::swap(data[i], data[swap_with]);
     }
 }
@@ -64,7 +65,9 @@ void assign_partition(T *input,
 void shuffle_partition(cuda_permute::HeapSet<T> *input, T *output, std::mt19937_64 rng) {
     size_t size = input->get_size();
     input->move_to_buffer(output);
-    fisher_yates(output, size, &rng);
+    if (size > 1) {
+        fisher_yates(output, size, rng);
+    }
 }
 #undef T
 

@@ -1,5 +1,6 @@
 CXX=g++
 CXXFLAGS=-std=c++11 -Wall -Wextra -O3
+#CXXFLAGS=-std=c++11 -Wall -Wextra -Og -g
 LINKERS=-pthread
 # LINKER=
 
