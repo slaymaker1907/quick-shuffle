@@ -2,6 +2,7 @@
 
 #include <random>
 #include <stdint.h>
+#include <limits.h>
 
 // based on https://stackoverflow.com/questions/51344558/uniform-random-numbers-dont-include-upper-bound
 class FastRandRange {

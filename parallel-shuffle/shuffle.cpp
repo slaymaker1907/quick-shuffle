@@ -109,7 +109,7 @@ size_t size_sqrt(size_t n) {
     return (size_t)std::ceil(sqrt(n));
 }
 
-int size_log2(size_t n) {
+size_t size_log2(size_t n) {
     int result = 0;
     while (n > 0) {
         n /= 2;
@@ -122,7 +122,7 @@ template<typename T>
 void parallel_shuffle(T *input, size_t size, int seed = 8675309) {
     size_t thread_count = std::thread::hardware_concurrency();
     ThreadPool pool(thread_count);
-    size_t pcount = thread_count * size_log2(size);
+    size_t pcount = thread_count + thread_count / 2; // add in extra for stragglers.
     size_t part_block_size = divceil(size, pcount * 8);
 
     cuda_permute::HeapSet<T> *partitions = (cuda_permute::HeapSet<T>*)malloc(sizeof(cuda_permute::HeapSet<T>) * pcount);
