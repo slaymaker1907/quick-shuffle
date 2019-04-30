@@ -58,12 +58,17 @@ void assign_partition(T *input,
 
         buffer->push_back(input[i]);
     }
+    for (size_t p = 0; p < pcount; p++) {
+        auto full_part = partitions + p;
+        full_part->add_to_size(node_buffers[p]->size());
+    }
     free(node_buffers);
 }
 
 //template<typename T>
 void shuffle_partition(cuda_permute::HeapSet<T> *input, T *output, std::mt19937_64 rng) {
     size_t size = input->get_size();
+    //if (size > 0) printf("%zu\n", size);
     input->move_to_buffer(output);
     if (size > 1) {
         fisher_yates(output, size, rng);
@@ -163,11 +168,17 @@ int main(int argc, char* argv[]) {
     printf("Generating the input vector...\n");
     size_t n = std::atoll(argv[1]);
     int *input = generate_input(n);
+
  
     auto begin = std::chrono::high_resolution_clock::now();
     parallel_shuffle(input, n);
     auto end = std::chrono::high_resolution_clock::now();
     printf("Shuffle takes: %.6fs\n", std::chrono::duration<double>(end - begin).count());
+    
+    for (size_t i = 0; i < n; ++i) {
+        printf("%d ", input[i]);
+    }
+    printf("\n");
 
     free(input);
 
