@@ -674,7 +674,24 @@ unsafe fn median_of_five<T, K, F>(data: &[T], func: F) -> usize
     inds_arr[total_len / 2]
 }
 
-static SHUFF_SIZE: usize = 500_000_000;
+// static SHUFF_SIZE: usize = 500_000_000;
+static SHUFF_SIZE: usize = 1000;
+
+pub fn inverted_pairs_percentage<T: Ord>(data: &[T]) -> f64 {
+    let mut pair_count = 0usize;
+    let mut inverted_count = 0usize;
+    let size = data.len();
+    for i1 in 0..size {
+        for i2 in (i1+1)..size {
+            pair_count += 1;
+            if data[i2] < data[i1] {
+                inverted_count += 1;
+            }
+        }
+    }
+
+    (inverted_count as f64) / (pair_count as f64)
+}
 
 fn main() {
     let mut gen = SmallRng::from_entropy();
@@ -682,6 +699,7 @@ fn main() {
 
     let start = Instant::now();
     fischer_yates(&mut gen, &mut to_shuffle);
+
     let end_time = start.elapsed();
     println!("Fischer-Yates took: {}.{}s", end_time.as_secs(), end_time.subsec_millis());
 

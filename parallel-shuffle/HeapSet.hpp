@@ -100,10 +100,23 @@ public:
         HeapSetNode<T> *current = head.load(std::memory_order::memory_order_acquire);
         while (current) {
             memcpy(buffer, current->_data, current->_size * sizeof(T));
+            buffer += current->_size;
             HeapSetNode<T> *next = current->_next;
             free(current);
             current = next;
         }
+    }
+
+    size_t true_size() {
+        size_t true_size = 0;
+        HeapSetNode<T> *current = head.load(std::memory_order::memory_order_acquire);
+        while (current) {
+            true_size += current->_size;
+            HeapSetNode<T> *next = current->_next;
+            current = next;
+        }
+
+        return true_size;
     }
 };
 
