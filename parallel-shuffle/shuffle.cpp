@@ -9,9 +9,10 @@
 #include "HeapSet.hpp"
 #include "ThreadPool.hpp"
 #include "FastRandRange.hpp"
+#include "WyhashRng.hpp"
 
 #define CCAST(expr, type) ((type)expr)
-#define RNG_T std::mt19937
+#define RNG_T WyhashRng
 
 template<typename T>
 double inversion_percentage(T *data, size_t size) {
@@ -42,7 +43,8 @@ void fisher_yates(T *data, size_t size, RNG_T *rng) {
     //printf("This partition has %zu items...\n", arr.size());
     size_t size_bound = size - 1;
     for (size_t i = 0; i < size_bound; i++) {
-        FastRandRange dis(i, size);
+        LemireRandRange dis(i, size);
+        // FastRandRange dis(i, size);
         size_t swap_with = dis.rand_in_range(rng);
         // assert(swap_with >= i && swap_with < size);
         std::swap(data[i], data[swap_with]);
@@ -63,8 +65,8 @@ void assign_partition(T *input,
     }
     size_t buffer_capacity = partitions[0].get_node_size();
 
-    // std::uniform_int_distribution<size_t> dis(0, pcount-1);
-    FastRandRange dis(0, pcount);
+    // Use this since we are generating a bunch of random numbers in a fixed range.
+    LemireRandRangePrecompute dis(0, pcount);
     for (size_t i = 0; i < size; i++) {
         size_t partition = dis.rand_in_range(&rng);
 
